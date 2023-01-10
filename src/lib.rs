@@ -2,13 +2,11 @@ use config::{self, ConfigError, Value, Map};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufRead, Lines};
-use std::path::Path;
 use http::{Request, request};
-use std::clone::Clone;
 use std::{thread, result};
 use std::time;
 use std::env;
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressStyle};
 
 enum Result {
     MATCH,
@@ -20,14 +18,16 @@ trait Proto {
 }
 
 struct PasswordsFile {
+    // path: String,
     lines: Lines<BufReader<File>>,
 }
 
 impl PasswordsFile {
-    fn new(path: impl AsRef<Path>) -> Self {
+    fn new(path: &str) -> Self {
         let file = File::open(path).unwrap();
         let reader = BufReader::new(file);
         Self { 
+            // path: path.to_string(),
             lines: reader.lines(),
         }
     }
@@ -37,15 +37,7 @@ impl Iterator for PasswordsFile {
     type Item = String;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.lines.next() {
-            Some(res) => {
-                if let Ok(password) = res {
-                    return Some(password);
-                }
-                None
-            },
-            None => None,
-        }
+        self.lines.next().and_then(|r| r.ok())
     }
 }
 
@@ -71,18 +63,19 @@ impl HTTPProto {
 
     fn build_request(target: &HashMap<String, Value>) -> request::Builder {
         let uri = target.get("uri").unwrap().to_string();
-        let method = target.get("method").unwrap().to_string();
+        let method = target.get("method").unwrap().to_string(); // TODO: default POST
 
         let mut request = Request::builder()
             .method(method.as_str())
             .uri(uri.as_str());
 
         
-        let headers: HashMap<String, String> = target.get("headers").unwrap().clone()
+        let headers: HashMap<String, String> = target.get("headers").unwrap() // TODO: default empty hashmap
+            .clone()
             .into_table()
             .unwrap()
             .into_iter()
-            .map(|x| (x.0, x.1.to_string()))
+            .map(|(k, v)| (k, v.to_string()))
             .collect();
 
         for (key, value) in headers {
@@ -98,7 +91,7 @@ impl Proto for HTTPProto {
         // let response = send(self.request.body(()).unwrap());
 
         // TODO: checking
-        println!("Checking: {}", password);
+        // println!("Checking: {}", password);
 
         // Result::MATCH
         Result::MISS
@@ -126,12 +119,16 @@ impl Settings {
         let config = config::Config::builder()
             .add_source(config::File::with_name(config_file.as_str()))
             .build()
-            .unwrap();
+            .unwrap();  // TODO: create default config?
         
-        let sleep = config.get_int("sleep").unwrap() as u64;
-        let dict_type = config.get_string("dict_type").unwrap();
-        let proto = config.get_string("proto").unwrap();
-        let target = config.get_table("target").unwrap();
+        let sleep = config.get_int("sleep").unwrap_or(0) as u64;
+        let dict_type = config.get_string("dict_type")
+            .unwrap_or("file".to_string())
+            .to_lowercase();
+        let proto = config.get_string("proto")
+            .unwrap_or("http".to_string())
+            .to_lowercase();
+        let target = config.get_table("target").unwrap(); // TODO: raise error
 
         Self { 
             config,
@@ -141,6 +138,10 @@ impl Settings {
             proto,
             target,
         }
+    }
+
+    fn save() {
+        // TODO: save data into yaml file
     }
 
     fn get_string(&self, key: &str) -> ConfigResult<String> {
@@ -169,66 +170,45 @@ impl Settings {
 }
 
 struct Progress {
-    bar: ProgressBar,
+    pb: ProgressBar,
 }
 
 impl Progress {
     fn new(workload: usize) -> Self {
-        let bar = ProgressBar::new(workload as u64);
-        Self { bar }
+        let pb = ProgressBar::new(workload as u64);
+        Self::customize(&pb);
+        Self { pb }
+    }
+
+    fn customize(pb: &ProgressBar) {
+        let template = "{spinner:.green} [{elapsed_precise}] {percent}% {wide_bar} {human_pos} of {human_len} | {per_sec} | ETA: {eta_precise}";
+        pb.set_style(
+            ProgressStyle::with_template(template).unwrap()
+            // .with_key("eta", |s, w| write!(w, "{}", s.eta().as_secs()).unwrap())
+        );
     }
 
     fn update(&self) {
-        self.bar.inc(1);
+        self.pb.inc(1);
     }
 
     fn finish(&self) {
-        self.bar.finish();
+        self.pb.finish();
     }
 }
+
 
 pub struct Application {
     settings: Settings,
     proto: Box<dyn Proto>,
-    passwords: Box<dyn Iterator<Item = String>>,
-    workload: usize,
+    version: String,
 }
 
 impl Application {
     pub fn new() -> Self {
         let settings = Settings::new();
         
-        let (
-            passwords,
-            workload
-        ) =  Self::get_passwords(&settings);
-        let proto = Self::get_proto(&settings);
-
-        Self {
-            settings,
-            proto,
-            passwords,
-            workload,
-        }
-    }
-
-    fn get_passwords(settings: &Settings) -> (Box<dyn Iterator<Item = String>>, usize) {
-        match settings.dict_type.as_str() {
-            "file" => {
-                (
-                    Box::new(PasswordsFile::new(&settings.dict_file)),
-                    PasswordsFile::new(&settings.dict_file).count(),
-                )
-            }
-            _ => {
-                // TODO: raise error
-                panic!("Unsupported dict type: {}", settings.dict_type);
-            }
-        }
-    }
-
-    fn get_proto(settings: &Settings) -> Box<dyn Proto> {
-        match settings.proto.as_str() {
+        let proto = match settings.proto.as_str() {
             "http" => {
                 Box::new(HTTPProto::new(&settings.target))
             }
@@ -236,23 +216,42 @@ impl Application {
                 // TODO: raise error
                 panic!("Unsupported protocol: {}", settings.proto);
             }
+        };
+
+        let version = env!("CARGO_PKG_VERSION", "unknown").to_string();
+
+        Self {
+            settings,
+            proto,
+            version,
         }
+    }
+
+    fn show_splash(&self) {
+        // TODO
+        println!("Version: {}", self.version)
     }
 
 
     /// Application entrypoint.
-    /// 
-    /// # Examples:
-    /// 
-    /// Basic usage:
-    /// 
-    /// ```
-    /// let app = Application::new();
-    /// app.run();
-    /// ```
     pub fn run(&self) {
-        let progress = Progress::new(self.workload);
-        for password in self.passwords {
+        self.show_splash();
+
+        let (passwords, workload) =  match self.settings.dict_type.as_str() {
+            "file" => {
+                (
+                    Box::new(PasswordsFile::new(&self.settings.dict_file)),
+                    PasswordsFile::new(&self.settings.dict_file).count(),
+                )
+            }
+            _ => {
+                // TODO: raise error
+                panic!("Unsupported dict type: {}", self.settings.dict_type);
+            }
+        };
+        let progress = Progress::new(workload);
+
+        for password in passwords {
             match self.proto.check(&password) {
                 Result::MATCH => {
                     // TODO
