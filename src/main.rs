@@ -1,4 +1,4 @@
-use imbrut::Application;
+use imbrut::application::Application;
 
 fn main() {
     let app = Application::new();

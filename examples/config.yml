@@ -1,0 +1,27 @@
+proto: http
+target:
+    auth_type: form
+    # auth_type: basic
+    uri: http://192.168.1.254/ptimeout.cgi
+    method: POST
+    success_codes: [200]
+    fail_codes: []
+    success_if_containes: []
+    fail_if_containes: 
+        - "System Authentication Failed."
+    headers:
+        user-agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
+dict_type: file
+dict_props:
+    password_length: 8
+    allowed_chars:
+        # - "abcdefghijklmnopqrstuvwxyz"
+        # - "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        # - ".,+-_()[]{}<>\\|/*!?@#$%&'^=:;~"
+        - "0123456789"ß
+usernames_source: file
+usernames:
+    - admin
+strategy:
+    - requests: 1
+    - sleep: 1000
